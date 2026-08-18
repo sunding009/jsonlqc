@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -104,8 +105,9 @@ func reportBadLines(stats Stats, maxErrors int) {
 	}
 }
 
-// Inspect 打开并扫描 path 指向的文件，返回统计结果。
-// 若文件不存在或读取失败则返回错误。
+// Inspect 打开并流式读取 path 指向的文件，返回统计结果。
+// 使用 bufio.Reader 逐行读取：无单行长度限制，也不会把整个文件读入内存；
+// 超长行同样正常计数并校验，随后继续处理后续行。若文件不存在或读取失败则返回错误。
 func Inspect(path string) (Stats, error) {
 	var stats Stats
 
@@ -115,37 +117,50 @@ func Inspect(path string) (Stats, error) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	// 默认缓冲 64KB，扩大到 1MB 以容纳超长的 JSON 行。
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	r := bufio.NewReader(f)
 
-	for scanner.Scan() {
-		stats.TotalLines++
-		line := scanner.Text()
+	for {
+		line, err := r.ReadString('\n')
 
-		if strings.TrimSpace(line) == "" {
-			stats.EmptyLines++
-			continue
+		// 只有读到实际内容（含空行本身的换行符）才计为一行；
+		// 文件末尾不带换行符时，最后一次返回剩余内容 + io.EOF。
+		if len(line) > 0 {
+			stats.TotalLines++
+			line = trimLineEnd(line)
+
+			if strings.TrimSpace(line) == "" {
+				stats.EmptyLines++
+			} else {
+				stats.NonEmptyLines++
+
+				// 逐行尝试用 encoding/json 解析；单行解析失败不中断整个扫描，仅记为坏行。
+				var v any
+				if uerr := json.Unmarshal([]byte(line), &v); uerr != nil {
+					stats.InvalidLines++
+					stats.BadLines = append(stats.BadLines, BadLine{
+						Line: stats.TotalLines,
+						Err:  uerr.Error(),
+					})
+				} else {
+					stats.ValidLines++
+				}
+			}
 		}
 
-		stats.NonEmptyLines++
-
-		// 逐行尝试用 encoding/json 解析；单行解析失败不中断整个扫描，仅记为坏行。
-		var v any
-		if err := json.Unmarshal([]byte(line), &v); err != nil {
-			stats.InvalidLines++
-			stats.BadLines = append(stats.BadLines, BadLine{
-				Line: stats.TotalLines,
-				Err:  err.Error(),
-			})
-		} else {
-			stats.ValidLines++
+		if err == io.EOF {
+			break
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return Stats{}, err
+		if err != nil {
+			return Stats{}, err
+		}
 	}
 
 	return stats, nil
+}
+
+// trimLineEnd 去掉行尾的换行符（兼容 "\n" 与 "\r\n"）。
+func trimLineEnd(s string) string {
+	s = strings.TrimSuffix(s, "\n")
+	s = strings.TrimSuffix(s, "\r")
+	return s
 }

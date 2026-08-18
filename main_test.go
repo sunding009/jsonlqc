@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -157,5 +158,57 @@ func TestLimitBadLines(t *testing.T) {
 	// 空切片
 	if got := limitBadLines(nil, 0); got != nil {
 		t.Errorf("limitBadLines(nil, 0) = %v，期望 nil", got)
+	}
+}
+
+func TestInspectLongLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "long.jsonl")
+
+	// 构造一个超过 1MB 的合法 JSON 行；旧的 bufio.Scanner（默认 64KB，最大 1MB）会触发 bufio.ErrTooLong 中断。
+	payload := strings.Repeat("x", 2*1024*1024) // 2MB
+	longLine := `{"id":1,"payload":"` + payload + `"}`
+
+	content := "{\"a\":1}\n" + longLine + "\n{\"b\":2}\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("写入临时文件失败: %v", err)
+	}
+
+	got, err := Inspect(path)
+	if err != nil {
+		t.Fatalf("Inspect 失败（超长行不应中断扫描）: %v", err)
+	}
+
+	if got.TotalLines != 3 {
+		t.Errorf("总行数 = %d，期望 3", got.TotalLines)
+	}
+	if got.ValidLines != 3 {
+		t.Errorf("合法行数 = %d，期望 3（超长行应被正常校验且后续行继续处理）", got.ValidLines)
+	}
+	if got.InvalidLines != 0 {
+		t.Errorf("非法行数 = %d，期望 0", got.InvalidLines)
+	}
+}
+
+func TestInspectNoTrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "noeol.jsonl")
+
+	// 最后一行不带换行符。
+	content := "{\"a\":1}\n{\"b\":2}"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("写入临时文件失败: %v", err)
+	}
+
+	got, err := Inspect(path)
+	if err != nil {
+		t.Fatalf("Inspect 失败: %v", err)
+	}
+
+	if got.TotalLines != 2 {
+		t.Errorf("总行数 = %d，期望 2", got.TotalLines)
+	}
+	if got.ValidLines != 2 {
+		t.Errorf("合法行数 = %d，期望 2", got.ValidLines)
 	}
 }

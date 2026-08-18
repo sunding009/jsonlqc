@@ -13,14 +13,20 @@ import (
 	"strings"
 )
 
+// BadLine 描述一条非法 JSON 行。
+type BadLine struct {
+	Line int    // 行号（1 起始）
+	Err  string // 解析错误原因
+}
+
 // Stats 保存一次质检的统计结果。
 type Stats struct {
-	TotalLines    int   // 总行数
-	EmptyLines    int   // 空行数（空白字符组成的行也视为空行）
-	NonEmptyLines int   // 非空行数
-	ValidLines    int   // 合法 JSON 的行数（仅统计非空行）
-	InvalidLines  int   // 非法 JSON 的行数（仅统计非空行）
-	InvalidRows   []int // 非法 JSON 行所在的行号（1 起始）
+	TotalLines    int       // 总行数
+	EmptyLines    int       // 空行数（空白字符组成的行也视为空行）
+	NonEmptyLines int       // 非空行数
+	ValidLines    int       // 合法 JSON 的行数（仅统计非空行）
+	InvalidLines  int       // 非法 JSON 的行数（仅统计非空行）
+	BadLines      []BadLine // 非法行详情（行号 + 错误原因）
 }
 
 // usage 打印命令行用法。
@@ -37,6 +43,8 @@ func main() {
 	// 支持 -q/--quiet 静默模式：仅输出统计数字，便于脚本消费。
 	quiet := flag.Bool("q", false, "静默模式，仅输出统计数字（顺序：总行数 空行数 非空行数 合法行数 非法行数）")
 	flag.BoolVar(quiet, "quiet", false, "同 -q")
+	// --max-errors 控制最多报告多少条坏行详情（0 表示不限）。
+	maxErrors := flag.Int("max-errors", 0, "最多报告多少条坏行详情（0 表示不限，报告全部）")
 	flag.Parse()
 
 	args := flag.Args()
@@ -65,8 +73,34 @@ func main() {
 	fmt.Printf("非空行数:   %d\n", stats.NonEmptyLines)
 	fmt.Printf("合法 JSON:  %d\n", stats.ValidLines)
 	fmt.Printf("非法 JSON:  %d\n", stats.InvalidLines)
-	if len(stats.InvalidRows) > 0 {
-		fmt.Printf("非法行号:   %v\n", stats.InvalidRows)
+	reportBadLines(stats, *maxErrors)
+}
+
+// limitBadLines 返回需要显示的坏行切片，受 maxErrors 限制（0 或负数表示不限）。
+func limitBadLines(lines []BadLine, maxErrors int) []BadLine {
+	if maxErrors <= 0 || maxErrors > len(lines) {
+		maxErrors = len(lines)
+	}
+	return lines[:maxErrors]
+}
+
+// reportBadLines 打印非法行详情（行号 + 错误原因），受 maxErrors 限制（0 表示不限制）。
+func reportBadLines(stats Stats, maxErrors int) {
+	if len(stats.BadLines) == 0 {
+		return
+	}
+
+	shown := limitBadLines(stats.BadLines, maxErrors)
+	if len(shown) < len(stats.BadLines) {
+		fmt.Printf("坏行详情（显示前 %d 条，共 %d 条）:\n", len(shown), len(stats.BadLines))
+	} else {
+		fmt.Println("坏行详情:")
+	}
+	for _, b := range shown {
+		fmt.Printf("  第 %d 行: %s\n", b.Line, b.Err)
+	}
+	if len(shown) < len(stats.BadLines) {
+		fmt.Printf("  ... 其余 %d 条未显示\n", len(stats.BadLines)-len(shown))
 	}
 }
 
@@ -100,7 +134,10 @@ func Inspect(path string) (Stats, error) {
 		var v any
 		if err := json.Unmarshal([]byte(line), &v); err != nil {
 			stats.InvalidLines++
-			stats.InvalidRows = append(stats.InvalidRows, stats.TotalLines)
+			stats.BadLines = append(stats.BadLines, BadLine{
+				Line: stats.TotalLines,
+				Err:  err.Error(),
+			})
 		} else {
 			stats.ValidLines++
 		}

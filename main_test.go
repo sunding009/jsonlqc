@@ -8,6 +8,7 @@ import (
 )
 
 func TestInspect(t *testing.T) {
+	// 注意：Err 字段为 encoding/json 在该 Go 版本下返回的错误文案。
 	tests := []struct {
 		name string
 		file string // testdata 下的文件名
@@ -22,7 +23,9 @@ func TestInspect(t *testing.T) {
 				NonEmptyLines: 4,
 				ValidLines:    3,
 				InvalidLines:  1,
-				InvalidRows:   []int{6},
+				BadLines: []BadLine{
+					{Line: 6, Err: "unexpected end of JSON input"},
+				},
 			},
 		},
 		{
@@ -34,7 +37,7 @@ func TestInspect(t *testing.T) {
 				NonEmptyLines: 0,
 				ValidLines:    0,
 				InvalidLines:  0,
-				InvalidRows:   nil,
+				BadLines:      nil,
 			},
 		},
 		{
@@ -51,7 +54,7 @@ func TestInspect(t *testing.T) {
 				NonEmptyLines: 3,
 				ValidLines:    3,
 				InvalidLines:  0,
-				InvalidRows:   nil,
+				BadLines:      nil,
 			},
 		},
 		{
@@ -63,7 +66,11 @@ func TestInspect(t *testing.T) {
 				NonEmptyLines: 3,
 				ValidLines:    0,
 				InvalidLines:  3,
-				InvalidRows:   []int{1, 2, 3},
+				BadLines: []BadLine{
+					{Line: 1, Err: "invalid character 'o' in literal null (expecting 'u')"},
+					{Line: 2, Err: "invalid character 'b' after object key"},
+					{Line: 3, Err: "unexpected end of JSON input"},
+				},
 			},
 		},
 	}
@@ -107,9 +114,48 @@ func TestMain_Quiet(t *testing.T) {
 		NonEmptyLines: 2,
 		ValidLines:    1,
 		InvalidLines:  1,
-		InvalidRows:   []int{3},
+		BadLines: []BadLine{
+			{Line: 3, Err: "invalid character 'o' in literal null (expecting 'u')"},
+		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got = %+v\nwant = %+v", got, want)
+	}
+}
+
+func TestLimitBadLines(t *testing.T) {
+	lines := []BadLine{
+		{Line: 1, Err: "e1"},
+		{Line: 2, Err: "e2"},
+		{Line: 3, Err: "e3"},
+	}
+
+	tests := []struct {
+		name      string
+		maxErrors int
+		wantLen   int
+	}{
+		{"零表示不限", 0, 3},
+		{"负数表示不限", -1, 3},
+		{"限制为 1 条", 1, 1},
+		{"限制为 3 条", 3, 3},
+		{"超过总数", 10, 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := limitBadLines(lines, tt.maxErrors)
+			if len(got) != tt.wantLen {
+				t.Errorf("limitBadLines(..., %d) 长度 = %d，期望 %d", tt.maxErrors, len(got), tt.wantLen)
+			}
+			if !reflect.DeepEqual(got, lines[:tt.wantLen]) {
+				t.Errorf("limitBadLines(..., %d) = %+v，期望 %+v", tt.maxErrors, got, lines[:tt.wantLen])
+			}
+		})
+	}
+
+	// 空切片
+	if got := limitBadLines(nil, 0); got != nil {
+		t.Errorf("limitBadLines(nil, 0) = %v，期望 nil", got)
 	}
 }

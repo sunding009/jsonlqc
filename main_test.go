@@ -322,3 +322,44 @@ func TestTypeMatches(t *testing.T) {
 		}
 	}
 }
+
+func TestSchemaCheck(t *testing.T) {
+	s := &Schema{
+		Required: []string{"id", "name"},
+		Properties: map[string]Property{
+			"id":     {Type: "integer"},
+			"name":   {Type: "string"},
+			"tags":   {Type: "array"},
+			"score":  {Type: "number"},
+			"active": {Type: "boolean"},
+			"meta":   {Type: "object"},
+			"nick":   {Type: "null"},
+		},
+	}
+
+	// 注意：JSON 数字统一解析为 float64，整数用 float64(1) 表示。
+	tests := []struct {
+		name string
+		v    any
+		want string // 空串表示通过
+	}{
+		{"顶层非对象", []any{1, 2}, `顶层必须是 JSON 对象，实际是 array`},
+		{"缺少必填字段", map[string]any{"id": float64(1)}, `缺少必填字段 "name"`},
+		{"id 类型错误(integer)", map[string]any{"id": "3", "name": "x"}, `字段 "id" 类型应为 integer，实际是 string`},
+		{"name 类型错误(string)", map[string]any{"id": float64(1), "name": float64(1)}, `字段 "name" 类型应为 string，实际是 integer`},
+		{"tags 类型错误(array)", map[string]any{"id": float64(1), "name": "x", "tags": float64(1)}, `字段 "tags" 类型应为 array，实际是 integer`},
+		{"score 类型错误(number)", map[string]any{"id": float64(1), "name": "x", "score": "high"}, `字段 "score" 类型应为 number，实际是 string`},
+		{"active 类型错误(boolean)", map[string]any{"id": float64(1), "name": "x", "active": "yes"}, `字段 "active" 类型应为 boolean，实际是 string`},
+		{"meta 类型错误(object)", map[string]any{"id": float64(1), "name": "x", "meta": float64(1)}, `字段 "meta" 类型应为 object，实际是 integer`},
+		{"nick 类型错误(null)", map[string]any{"id": float64(1), "name": "x", "nick": float64(1)}, `字段 "nick" 类型应为 null，实际是 integer`},
+		{"全部符合", map[string]any{"id": float64(1), "name": "x"}, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := s.check(tt.v); got != tt.want {
+				t.Errorf("check(%v) = %q，期望 %q", tt.v, got, tt.want)
+			}
+		})
+	}
+}

@@ -1,0 +1,15 @@
+# 版本控制
+.git
+.gitignore
+
+# 本地构建产物
+jsonlqc
+
+# 考核记录（无需打入镜像）
+AI开发考核_孙丁_jsonlqc.jsonl
+
+# 测试数据（运行时按需挂载，不随镜像分发）
+testdata
+
+# 编辑器与系统文件
+.DS_Store

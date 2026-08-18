@@ -1,6 +1,7 @@
 // jsonlqc 是一个 JSONL 数据质检命令行工具。
 // 它读取指定 .jsonl 文件，统计总行数、空行数、非空行数，
-// 并对每一非空行做 JSON 合法性校验，最后输出统计结果。
+// 并对每一非空行逐行尝试用 encoding/json 解析，统计合法 JSON 行数与非法（坏）行数，
+// 非法行不会中断整个扫描，最后输出统计结果。
 package main
 
 import (
@@ -94,11 +95,14 @@ func Inspect(path string) (Stats, error) {
 		}
 
 		stats.NonEmptyLines++
-		if json.Valid([]byte(line)) {
-			stats.ValidLines++
-		} else {
+
+		// 逐行尝试用 encoding/json 解析；单行解析失败不中断整个扫描，仅记为坏行。
+		var v any
+		if err := json.Unmarshal([]byte(line), &v); err != nil {
 			stats.InvalidLines++
 			stats.InvalidRows = append(stats.InvalidRows, stats.TotalLines)
+		} else {
+			stats.ValidLines++
 		}
 	}
 

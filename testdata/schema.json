@@ -1,0 +1,12 @@
+{
+  "required": ["id", "name"],
+  "properties": {
+    "id": {"type": "integer"},
+    "name": {"type": "string"},
+    "tags": {"type": "array"},
+    "score": {"type": "number"},
+    "active": {"type": "boolean"},
+    "meta": {"type": "object"},
+    "nick": {"type": "null"}
+  }
+}

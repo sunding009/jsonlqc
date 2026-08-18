@@ -16,6 +16,10 @@ JSONL 数据质检命令行工具（Go 标准库实现，无第三方依赖）�
 读取方式：使用 `bufio.Reader` 流式逐行读取（`ReadString('\n')`）——无单行长度限制，
 也不会把整个文件读入内存；超长行同样正常计数并校验，随后继续处理后续行。
 
+可选 schema 校验：通过 `--schema` 指定 schema 文件（JSON），对每行做结构校验——
+`required` 列出必填字段，`properties` 声明字段类型；每行顶层必须是 JSON 对象，
+缺必填字段或字段类型不符的行计为非法，报告中说明具体原因。
+
 ## 安装
 
 ```bash
@@ -59,6 +63,37 @@ $ jsonlqc --max-errors 1 testdata/invalid.jsonl
   ... 其余 2 条未显示
 ```
 
+`--schema` 指定 schema 文件（JSON），对每行做结构校验：
+
+```bash
+$ jsonlqc --schema testdata/schema.json testdata/schema-violations.jsonl
+文件:       testdata/schema-violations.jsonl
+Schema:     testdata/schema.json
+总行数:     5
+空行数:     0
+非空行数:   5
+合法 JSON:  1
+非法 JSON:  4
+坏行详情:
+  第 2 行: 缺少必填字段 "name"
+  第 3 行: 字段 "id" 类型应为 integer，实际是 string
+  第 4 行: 顶层必须是 JSON 对象，实际是 array
+  第 5 行: 字段 "score" 类型应为 number，实际是 string
+```
+
+schema 文件格式：`required` 列出必填字段，`properties` 声明字段类型
+（支持 `string` / `integer` / `number` / `boolean` / `array` / `object` / `null`）：
+
+```json
+{
+  "required": ["id", "name"],
+  "properties": {
+    "id":   {"type": "integer"},
+    "name": {"type": "string"}
+  }
+}
+```
+
 静默模式（仅输出统计数字，便于脚本消费）：
 
 ```bash
@@ -89,3 +124,5 @@ go test ./...
 | `invalid.jsonl` | 全部为非法 JSON |
 | `blank.jsonl` | 全部为空行 / 空白行 |
 | `empty.jsonl` | 空文件 |
+| `schema.json` | schema 校验示例（required + properties） |
+| `schema-violations.jsonl` | schema 违规数据（缺必填、类型不符、非对象） |

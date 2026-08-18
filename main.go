@@ -10,7 +10,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -46,6 +48,8 @@ func main() {
 	flag.BoolVar(quiet, "quiet", false, "同 -q")
 	// --max-errors 控制最多报告多少条坏行详情（0 表示不限）。
 	maxErrors := flag.Int("max-errors", 0, "最多报告多少条坏行详情（0 表示不限，报告全部）")
+	// --schema 指定 schema 文件，校验每行结构。
+	schemaPath := flag.String("schema", "", "指定 schema 文件（JSON）：required 列必填字段，properties 声明字段类型")
 	flag.Parse()
 
 	args := flag.Args()
@@ -55,7 +59,18 @@ func main() {
 	}
 
 	path := args[0]
-	stats, err := Inspect(path)
+
+	var schema *Schema
+	if *schemaPath != "" {
+		var err error
+		schema, err = LoadSchema(*schemaPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	stats, err := Inspect(path, schema)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
 		os.Exit(1)
@@ -69,6 +84,9 @@ func main() {
 	}
 
 	fmt.Printf("文件:       %s\n", path)
+	if schema != nil {
+		fmt.Printf("Schema:     %s\n", *schemaPath)
+	}
 	fmt.Printf("总行数:     %d\n", stats.TotalLines)
 	fmt.Printf("空行数:     %d\n", stats.EmptyLines)
 	fmt.Printf("非空行数:   %d\n", stats.NonEmptyLines)
@@ -105,10 +123,126 @@ func reportBadLines(stats Stats, maxErrors int) {
 	}
 }
 
+// ---- schema 校验 ----
+
+// Property 描述 schema 中某个字段的类型约束。
+type Property struct {
+	Type string `json:"type"`
+}
+
+// Schema 描述 JSONL 数据行的结构约束：required 列出必填字段，properties 声明字段类型。
+type Schema struct {
+	Required   []string            `json:"required"`
+	Properties map[string]Property `json:"properties"`
+}
+
+// allowedTypes 是 schema 支持的字段类型集合。
+var allowedTypes = map[string]bool{
+	"string": true, "integer": true, "number": true, "boolean": true,
+	"array": true, "object": true, "null": true,
+}
+
+// LoadSchema 从 path 读取并解析 schema 文件（JSON 格式），并校验其字段类型合法。
+func LoadSchema(path string) (*Schema, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var s Schema
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, fmt.Errorf("解析 schema 文件 %s 失败: %w", path, err)
+	}
+	if err := s.validate(); err != nil {
+		return nil, fmt.Errorf("schema 文件 %s 非法: %w", path, err)
+	}
+	return &s, nil
+}
+
+// validate 校验 schema 中每个 property 的类型是否在支持范围内。
+func (s *Schema) validate() error {
+	for name, prop := range s.Properties {
+		if prop.Type != "" && !allowedTypes[prop.Type] {
+			return fmt.Errorf("字段 %q 的类型 %q 不受支持（支持：string/integer/number/boolean/array/object/null）", name, prop.Type)
+		}
+	}
+	return nil
+}
+
+// check 校验解析后的 JSON 值是否符合 schema，返回违规原因（空串表示通过）。
+func (s *Schema) check(v any) string {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("顶层必须是 JSON 对象，实际是 %s", jsonType(v))
+	}
+
+	for _, name := range s.Required {
+		if _, ok := obj[name]; !ok {
+			return fmt.Sprintf("缺少必填字段 %q", name)
+		}
+	}
+
+	for _, name := range sortedPropertyNames(s.Properties) {
+		prop := s.Properties[name]
+		val, ok := obj[name]
+		if !ok {
+			continue // 字段未出现则跳过（是否必填已在上一步校验）
+		}
+		actual := jsonType(val)
+		if prop.Type != "" && !typeMatches(actual, prop.Type) {
+			return fmt.Sprintf("字段 %q 类型应为 %s，实际是 %s", name, prop.Type, actual)
+		}
+	}
+
+	return ""
+}
+
+// jsonType 返回一个已解析 JSON 值的类型名（string/integer/number/boolean/array/object/null）。
+func jsonType(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "boolean"
+	case string:
+		return "string"
+	case float64:
+		// JSON 数字统一解析为 float64；无小数部分即视为 integer。
+		if x == math.Trunc(x) {
+			return "integer"
+		}
+		return "number"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default:
+		return "unknown"
+	}
+}
+
+// typeMatches 判断实际类型是否满足期望类型（number 兼容 integer）。
+func typeMatches(actual, want string) bool {
+	if actual == want {
+		return true
+	}
+	return want == "number" && actual == "integer"
+}
+
+// sortedPropertyNames 返回 schema 属性名按字典序排序的切片，保证错误报告顺序稳定。
+func sortedPropertyNames(props map[string]Property) []string {
+	names := make([]string, 0, len(props))
+	for name := range props {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // Inspect 打开并流式读取 path 指向的文件，返回统计结果。
 // 使用 bufio.Reader 逐行读取：无单行长度限制，也不会把整个文件读入内存；
-// 超长行同样正常计数并校验，随后继续处理后续行。若文件不存在或读取失败则返回错误。
-func Inspect(path string) (Stats, error) {
+// 超长行同样正常计数并校验，随后继续处理后续行。若 schema 非 nil，则对每行做结构校验。
+// 若文件不存在或读取失败则返回错误。
+func Inspect(path string, schema *Schema) (Stats, error) {
 	var stats Stats
 
 	f, err := os.Open(path)
@@ -141,6 +275,17 @@ func Inspect(path string) (Stats, error) {
 						Line: stats.TotalLines,
 						Err:  uerr.Error(),
 					})
+				} else if schema != nil {
+					// 语法合法时，若指定了 schema，进一步做结构校验。
+					if reason := schema.check(v); reason != "" {
+						stats.InvalidLines++
+						stats.BadLines = append(stats.BadLines, BadLine{
+							Line: stats.TotalLines,
+							Err:  reason,
+						})
+					} else {
+						stats.ValidLines++
+					}
 				} else {
 					stats.ValidLines++
 				}

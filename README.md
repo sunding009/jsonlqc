@@ -23,6 +23,46 @@ JSONL 数据质检命令行工具（纯 Go 标准库实现，零第三方依赖�
   （build / test / lint）、Dockerfile（多阶段构建 + scratch 空镜像）、README 文档，
   一套完整、可复现、可移植的工程实践，能全面体现「编码之外」的交付素养。
 
+## 开发过程记录
+
+### 提示词产生的方法
+
+全程使用 PI 编程智能体辅助开发，核心思路是「一次只推进一个可独立验证的增量」，
+将需求拆解为 7 轮交互指令（对应 7 个功能提交）：
+
+1. **需求拆解**：把「JSONL 质检工具」拆成「统计 → 逐行校验 → 坏行报告 → 流式读取 →
+   schema 校验 → 单元测试 → 工程化」七个递增目标，每轮只交付一个增量，便于审查 diff 与回滚。
+2. **指令中显式声明边界**：每轮指令都写清关键约束，例如「非法行不中断整个扫描」
+   「无单行长度限制」「空行/空白行也计入空行数」「`integer` 满足 `number` 约束」，
+   避免智能体自行发挥。
+3. **限定技术路线**：明确「仅用标准库、不引入第三方依赖」，把实现收敛到
+   `bufio` / `encoding/json` / `flag` 等标准能力，保证可静态编译、可移植。
+4. **每轮闭环验证**：每轮指令附带验收动作——`gofmt -l`、`go vet`、`go test`、
+   实际运行示例，验证通过后才进入下一轮或提交。
+
+### JSONL 文件的生成方法
+
+考核 JSONL（`AI开发考核_孙丁_jsonlqc.jsonl`）由脚本生成，保证与 Git 历史一一对应、格式规范：
+
+- **轮次边界**：以 Git 中 7 个功能提交（`553f789`、`60612a0`、`3b9a485`、`13c0bbf`、
+  `0132d07`、`b353402`、`5d7b0f9`）为 7 轮，`round_id` 从 1 递增。
+- **prompt_content**：取每轮实际向智能体发送的完整自然语言指令。
+- **modify_diff**：用 `git show <commit> --format=` 提取该提交相对父提交的完整 diff。
+- **commit_hash / modify_time**：用 `git rev-parse` / `git show -s --format=%ai`
+  从提交元数据读取（时间格式化为 `YYYY-MM-DD HH:MM:SS`）。
+- **agent_type / dev_language**：固定为 `PI` 与 `Go`。
+- **规范化输出**：用 Python `json.dumps(ensure_ascii=False)` 序列化，保证 UTF-8 编码、
+  字段顺序固定、diff 中的换行与引号被正确转义。
+
+### 过程中遇到的问题和解决方法
+
+| 问题 | 现象 | 解决方法 |
+| --- | --- | --- |
+| 单行超长中断扫描 | 初版用 `bufio.Scanner`（默认 64KB、上限 1MB），超长行触发 `bufio.ErrTooLong` 导致扫描中断 | 改用 `bufio.Reader.ReadString('\n')` 流式读取，解除单行长度限制 |
+| `integer`/`number` 类型区分 | JSON 数字经 `encoding/json` 统一解析为 `float64`，无法直接区分整数与小数 | 用 `math.Trunc(x) == x` 判断整数部分，schema 校验中让 `number` 兼容 `integer` |
+| 推送被拒 | 远程已存在 GitHub 自动生成的 Initial commit，本地历史与远程是两个独立根，直接 `push` 被拒 | `git fetch` 后 `git merge origin/main --allow-unrelated-histories`，保留本地提交哈希 |
+| schema 报错顺序不稳定 | 遍历 map 校验字段类型，错误输出顺序随 map 迭代随机 | 对属性名做字典序排序后遍历，保证错误报告确定性 |
+
 ## 功能特性
 
 - 统计总行数、空行数（含仅空白字符的行）、非空行数
